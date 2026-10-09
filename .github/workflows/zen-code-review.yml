@@ -1,0 +1,65 @@
+name: 🐰 SpaceBunny Code Review (Zen, No Key)
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run security audit & code refactor review via Space Bunny Free
+        id: ai_review
+        run: |
+          DIFF=$(git diff origin/${{ github.base_ref }}...origin/${{ github.head_ref }})
+
+          RESP=$(curl -s https://opencode.ai/zen/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "space-bunny-free",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "你是资深安全工程师+高级软件架构师。审查下面代码diff，优先查找安全漏洞：SQL注入、XSS、命令注入、路径穿越、权限绕过、硬编码密钥、内存泄漏、不安全外部调用；其次评估代码质量，给出重构优化方案。\n\n输出严格遵守固定格式，禁止多余文字：\n### 🔴 安全漏标记漏洞等级：【高危】/【中危】/【低危】/【未发现高危安全漏洞】列出风险点、位置、危害说明。
+### 🟡 代码质量 & 重构建议
+列出可重构点，附带优化代码片段。
+### 🟢 总结
+简短评估变更风险。
+### 🚨 HAS_CRITICAL
+只输出 true / false。true代表存在至少1个高危漏洞；false代表无高危漏洞。
+
+```diff
+'"$DIFF"'
+```"
+                }
+              ],
+              "temperature": 0.1
+            }')
+
+          # 提取AI完整返回文本
+          CONTENT=$(echo "$RESP" | jq -r '.choices[0].message.content')
+          echo "REVIEW_RESULT<<EOF" >> $GITHUB_ENV
+          echo "$CONTENT" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+          # 提取高危标记 HAS_CRITICAL
+          HAS_CRITICAL=$(echo "$CONTENT" | grep -oP '### 🚨 HAS_CRITICAL\s*\K(true|false)')
+          echo "HAS_CRITICAL=$HAS_CRITICAL" >> $GITHUB_ENV
+
+      - name: Post AI review comment on Pull Request
+        uses: thollander/actions-comment-pull-request@v2
+        with:
+          message: |
+            # 🐰 Space Bunny Free 代码审查报告
+            > Powered by OpenCode Zen (No API Key)
+            ${{ env.REVIEW_RESULT }}
+
+      - name: Fail job if critical vulnerability found
+        if: env.HAS_CRITICAL == 'true'
+        run: |
+          echo "❌ 检测到【高危安全漏洞】，本审查任务失败，PR需要修复后才能合并！"
+          exit 1
